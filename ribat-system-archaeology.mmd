@@ -1,0 +1,157 @@
+%% RIBAT — System Archaeology / End-to-End Architecture
+%% Legend: solid = implemented or represented in MVP; dashed = future production boundary; dotted = public/redacted output.
+flowchart LR
+  classDef actor fill:#242522,color:#fff,stroke:#242522,stroke-width:2px
+  classDef input fill:#fff8ee,color:#5c3b1f,stroke:#e58a3a,stroke-width:1.5px
+  classDef privacy fill:#e7f4f1,color:#155f5a,stroke:#187c76,stroke-width:1.5px
+  classDef registry fill:#eeeaf7,color:#55447e,stroke:#7665a8,stroke-width:1.5px
+  classDef public fill:#eaf0f5,color:#405d76,stroke:#4e7293,stroke-width:1.5px
+  classDef state fill:#fbfaf7,color:#242522,stroke:#8a8b83,stroke-width:1.5px
+  classDef risk fill:#fff2e4,color:#7b4a1c,stroke:#e58a3a,stroke-width:2px
+  classDef future fill:#f5f5f1,color:#73746d,stroke:#96978d,stroke-dasharray: 5 4
+  classDef note fill:#f7f5ef,color:#65665f,stroke:#c9c6bc,stroke-dasharray: 2 3
+
+  subgraph A[01 · PEOPLE AND ENTRY POINTS]
+    L[Lender A / risk officer]:::actor
+    O[Operations officer]:::actor
+    D[Debtor / buyer]:::actor
+    S[Supplier / SME]:::actor
+    G[Guardian pool<br/>lawyer · arbitrator · notary]:::actor
+    R[Regulator / insurer / auditor]:::actor
+    UI[Console UI<br/>Check · Journal · Due process]:::input
+    API[Gateway API<br/>auth · rate limit · audit log]:::future
+  end
+
+  subgraph B[02 · RECEIVABLE INTAKE AND NORMALISATION]
+    I0[Receivable candidate node N0<br/>invoice or bill of exchange<br/>raw fields stay with lender]:::input
+    F1[Reference / instrument type]:::input
+    F2[Supplier + buyer identifiers]:::input
+    F3[Issue date + amount]:::input
+    F4[TTN / El Fatoora reference<br/>when available]:::input
+    V[Schema validation<br/>required fields · format · jurisdiction]:::state
+    C[Canonicalisation function<br/>same economics → comparable form]:::privacy
+    K1[INV1 candidate<br/>supplier · buyer · reference · date]:::privacy
+    K2[INV2 candidate<br/>official e-invoice / TTN reference]:::privacy
+    K3[INV3 candidate<br/>supplier · buyer · date · amount]:::privacy
+  end
+
+  subgraph C[03 · PRIVACY BOUNDARY AND COLLISION CHECK]
+    B1[Blind / hash / OPRF input<br/>production boundary]:::privacy
+    Q[Query package Q<br/>blinded key candidates + member proof]:::privacy
+    E[Private evaluation<br/>registry cannot read raw commercial fields]:::future
+    DB[(Encrypted registry index<br/>candidate commitments)]:::future
+    M[Match engine<br/>exact / reissued / ambiguous]:::privacy
+    CLEAR{Collision?}:::state
+    FALSE[False-positive review<br/>mediated disclosure only]:::risk
+    BLOCKED[BLOCKED response<br/>senior rank + timestamp<br/>no lender identity]:::risk
+    CLEAROUT[CLEAR response<br/>eligible to register]:::privacy
+  end
+
+  subgraph D[04 · ATOMIC REGISTRY AND STATE MACHINE]
+    CLAIM[Claim node C<br/>nullifier · partyId · docHash<br/>status · rank · seniorAt]:::registry
+    TX[Atomic compare-and-set<br/>if absent → create rank 1<br/>if present → reject later claim]:::registry
+    SENIOR[Senior claim node C1<br/>rank 1 · consensus timestamp]:::state
+    JUNIOR[Rejected / collision node C2<br/>no active priority created]:::risk
+    ACTIVE[ACTIVE<br/>registered and eligible]:::state
+    FROZEN[FROZEN<br/>dispute order executed]:::state
+    RELEASED[RELEASED<br/>paid / discharged]:::state
+    EXPIRED[EXPIRED<br/>order or claim window ended]:::state
+  end
+
+  subgraph E[05 · AUDIT, CONSENSUS AND PUBLIC PROOF]
+    EV[Private-to-public event envelope<br/>eventType · nullifier · partyId<br/>rank · status · timestamp]:::public
+    HCS[Hedera Consensus Service<br/>topic message / sequence number]:::public
+    ROOT[Epoch root / Merkle root<br/>periodic integrity checkpoint]:::public
+    MIRROR[Mirror indexer<br/>searchable event history]:::public
+    VERIFY[Public Verify page<br/>redacted proof only]:::public
+    PUB[Public fields only<br/>nullifier · pseudonymous partyId<br/>rank · status · timestamp · root]:::public
+    SENSITIVE[Off-chain private store<br/>document · names · amount<br/>tax IDs · lender portfolio]:::future
+  end
+
+  subgraph F[06 · DUE PROCESS AND DISPUTE PATH]
+    PROP[Freeze proposal node O<br/>reason · claim reference<br/>expiry · proposer signature]:::registry
+    G1[Guardian 1 approval]:::actor
+    G2[Guardian 2 approval]:::actor
+    G3[Guardian 3 review / pending]:::actor
+    QUORUM{Quorum reached?<br/>2 of 3}:::state
+    LOCK[Time-lock window<br/>no immediate unilateral freeze]:::registry
+    EXEC[Execute freeze order<br/>public ORDER + EXECUTED events]:::registry
+    AUTO[Auto-expiry<br/>order expires unless renewed]:::registry
+    APPEAL[Appeal / arbitration path]:::future
+  end
+
+  subgraph H[07 · RELEASE, INSURANCE AND ANALYTICS]
+    PAY[Normal bank settlement<br/>outside RIBAT]:::actor
+    RELEASE[Release claim]:::registry
+    SCORE[LinkScore v0<br/>history · attestation · dispute state]:::registry
+    CARD[Link Card JSON<br/>asset class · jurisdiction · score<br/>anchor · status]:::public
+    METRICS[Aggregated metrics<br/>checks · collisions · value protected<br/>fees · HCS events]:::public
+    INS[Insurer / guarantee fund<br/>warranty underwriting]:::future
+  end
+
+  L --> UI
+  O --> UI
+  UI --> I0
+  D -. confirmation / dispute .-> UI
+  S -. source data .-> I0
+  I0 --> F1 & F2 & F3 & F4
+  F1 & F2 & F3 & F4 --> V --> C
+  C --> K1 & K2 & K3
+  K1 & K2 & K3 --> B1 --> Q
+  Q --> API
+  API -. future protected call .-> E
+  E --> DB --> M
+  M --> CLEAR
+  CLEAR -->|no| CLEAROUT --> TX
+  CLEAR -->|yes| BLOCKED
+  CLEAR -->|ambiguous| FALSE
+  BLOCKED --> UI
+  FALSE -->|resolved legitimate twin| CLEAROUT
+  FALSE -->|confirmed conflict| BLOCKED
+  TX -->|empty key set| CLAIM
+  TX -->|existing commitment| JUNIOR
+  CLAIM --> SENIOR --> ACTIVE
+  ACTIVE --> EV
+  JUNIOR --> EV
+  EV --> HCS --> MIRROR
+  HCS --> ROOT
+  MIRROR --> VERIFY --> PUB
+  SENSITIVE -. never published .-> VERIFY
+  CLAIM -. private document hash relation .-> SENSITIVE
+  ACTIVE -->|challenge| PROP
+  PROP --> G1 & G2 & G3
+  G1 & G2 & G3 --> QUORUM
+  QUORUM -->|no| PROP
+  QUORUM -->|yes| LOCK --> EXEC --> FROZEN
+  EXEC --> EV
+  LOCK -. expiry without quorum .-> AUTO
+  FROZEN --> AUTO
+  AUTO --> EXPIRED
+  FROZEN -. appeal .-> APPEAL
+  ACTIVE -->|invoice paid| PAY --> RELEASE --> RELEASED
+  RELEASED --> EV
+  ACTIVE --> SCORE --> CARD
+  FROZEN --> SCORE
+  MIRROR --> METRICS
+  CARD --> L
+  METRICS --> R
+  SCORE -. future underwriting input .-> INS
+  R -. oversight / aggregate data .-> METRICS
+
+  N0[Small-node movement key<br/>N0 raw candidate → K1/K2/K3<br/>→ Q blinded package → C claim<br/>→ EV event → HCS message → root/index<br/>→ Verify proof / released state]:::note
+  N0 -. traces .-> I0
+  N0 -. traces .-> Q
+  N0 -. traces .-> CLAIM
+  N0 -. traces .-> EV
+  N0 -. traces .-> VERIFY
+
+  classDef boundary fill:#fff,stroke:#187c76,stroke-width:2px,stroke-dasharray: 7 4
+  class B1,Q,E,DB,SENSITIVE boundary
+
+  style A fill:#f7f4ec,stroke:#c9c6bc
+  style B fill:#fffaf3,stroke:#e58a3a
+  style C fill:#eff8f5,stroke:#187c76
+  style D fill:#f3f0f8,stroke:#7665a8
+  style E fill:#eef3f7,stroke:#4e7293
+  style F fill:#f4f0fa,stroke:#7665a8
+  style H fill:#f5f4ef,stroke:#8a8b83

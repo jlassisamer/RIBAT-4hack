@@ -1,0 +1,95 @@
+%% RIBAT — Node Movement / Event Archaeology
+sequenceDiagram
+  autonumber
+  participant L as Lender / Operator
+  participant UI as Console UI
+  participant LOC as Local canonicaliser
+  participant BL as Blind boundary
+  participant GW as Gateway / Auth
+  participant RI as Registry index
+  participant REG as Atomic registry
+  participant HCS as Hedera topic
+  participant MI as Mirror indexer
+  participant VER as Verify public
+  participant GP as Guardian pool
+  participant PAY as Bank settlement
+
+  Note over L,VER: N0 — raw receivable candidate. Raw document, parties, amount and tax IDs remain in lender custody.
+  L->>UI: 1. Enter invoice or traite fields
+  UI->>LOC: 2. Validate type, jurisdiction and required fields
+  LOC->>LOC: 3. Normalise references, dates, parties and amount
+  LOC->>LOC: 4. Derive INV1, INV2 and INV3 candidates
+  Note over LOC: N1/N2/N3 — three local key nodes. They are comparable fingerprints, not public data.
+  LOC->>BL: 5. Blind or hash key candidates
+  BL->>GW: 6. Send Q = blinded candidates + member proof
+  Note over BL,GW: Privacy boundary: production registry receives no raw invoice, name, amount or portfolio.
+  GW->>RI: 7. Authenticated collision query
+  RI->>RI: 8. Compare exact key commitments and reissue signals
+  alt No matching commitment
+    RI-->>GW: 9A. CLEAR
+    GW-->>UI: 10A. Clear result + candidate receipt
+    UI->>REG: 11A. Atomic register request
+    REG->>REG: 12A. Compare-and-set on canonical commitment
+    REG->>REG: 13A. Create C1 with rank=1 and consensus timestamp
+    Note over REG: C1 — active senior claim node. Contains nullifier, pseudonymous partyId, docHash and status.
+    REG->>HCS: 14A. Publish REGISTERED event envelope
+    HCS-->>REG: 15A. Consensus timestamp + sequence number
+    HCS->>MI: 16A. Mirror event
+    MI->>MI: 17A. Update searchable history and epoch accumulator
+    MI-->>VER: 18A. Expose redacted proof fields
+    VER-->>L: 19A. Verify: status, rank, timestamp, root, simulated/live anchor label
+    L->>PAY: 20A. Fund through normal bank rails
+  else Matching commitment
+    RI-->>GW: 9B. COLLISION + senior rank/timestamp
+    GW-->>UI: 10B. BLOCKED, without senior lender identity
+    UI->>L: 11B. Stop funding or request mediated review
+    Note over UI,L: C2 — later candidate node is not given active priority.
+    alt False positive
+      L->>GP: 12B. Submit mediated disclosure request
+      GP-->>L: 13B. Legitimate twin or confirmed conflict
+    else Confirmed conflict
+      L->>UI: 12C. Create dispute / freeze proposal
+    end
+  end
+
+  Note over L,VER: N4 — public event node contains only minimal proof: event type, nullifier, partyId, rank, status and timestamp.
+  opt Claim is challenged
+    L->>GP: 21. Propose freeze order O with reason and expiry
+    GP->>GP: 22. Verify proposer and claim reference
+    GP-->>REG: 23. Guardian 1 approval
+    GP-->>REG: 24. Guardian 2 approval
+    GP-->>REG: 25. Guardian 3 pending / reject / approve
+    alt Quorum not reached
+      REG-->>GP: 26A. Keep order pending
+      REG->>HCS: 27A. Publish ORDER event
+    else Quorum reached
+      REG->>REG: 26B. Start time-lock
+      REG->>HCS: 27B. Publish TIME_LOCK event
+      REG->>REG: 28B. Execute after delay
+      REG->>REG: 29B. C1 status ACTIVE → FROZEN
+      REG->>HCS: 30B. Publish EXECUTED event
+      HCS->>MI: 31B. Mirror status transition
+      MI-->>VER: 32B. Verify shows FROZEN + order proof
+      alt Order renewed through valid process
+        GP->>REG: 33B. Renew before expiry
+      else No renewal
+        REG->>REG: 33C. Auto-expire order
+        REG->>REG: 34C. FROZEN → EXPIRED or RELEASED per policy
+        REG->>HCS: 35C. Publish EXPIRED event
+      end
+    end
+  end
+
+  opt Receivable is paid or discharged
+    PAY-->>L: 36. Settlement confirmation
+    L->>REG: 37. Release claim request
+    REG->>REG: 38. ACTIVE or FROZEN → RELEASED according to policy
+    REG->>HCS: 39. Publish RELEASED event
+    HCS->>MI: 40. Mirror final lifecycle status
+    MI-->>VER: 41. Verify shows RELEASED and complete history
+  end
+
+  Note over MI,VER: N5 — epoch root is periodically published so historical event order can be independently checked.
+  MI->>HCS: 42. Publish epoch root / Merkle root
+  HCS-->>MI: 43. Root consensus timestamp
+  MI-->>VER: 44. Attach root and mirror evidence
